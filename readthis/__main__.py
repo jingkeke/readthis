@@ -2,13 +2,10 @@
 
 import argparse
 import json
-import logging
-import os
 import re
 import sys
 import threading
 import time
-import warnings
 import pathlib
 
 from rich.console import Console
@@ -17,28 +14,6 @@ from rich.text import Text
 
 _console = Console(stderr=True)
 
-# Allow PyTorch to fall back from MPS (Apple Silicon GPU) to CPU for unsupported ops.
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-warnings.filterwarnings("ignore")
-
-# If the model is already in the Hugging Face cache, force offline mode so the
-# pipeline never attempts a network check on startup
-try:
-    from huggingface_hub import scan_cache_dir
-
-    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
-
-    cached_repos = {repo.repo_id for repo in scan_cache_dir().repos}
-    if "hexgrad/Kokoro-82M" in cached_repos:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-        os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-    else:
-        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"
-        os.environ["HF_HUB_DISABLE_TELEMETRY"] = "0"
-except Exception:
-    pass
 
 
 def _load_config():
@@ -64,60 +39,13 @@ SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 URL_PATTERN = re.compile(r"^https?://")
 
 VOICES = [
-    "af_alloy",
-    "af_aoede",
-    "af_bella",
-    "af_heart",
-    "af_jessica",
-    "af_kore",
-    "af_nicole",
-    "af_nova",
-    "af_river",
-    "af_sarah",
-    "af_sky",
-    "am_adam",
-    "am_echo",
-    "am_eric",
-    "am_fenrir",
-    "am_liam",
-    "am_michael",
-    "am_onyx",
-    "am_puck",
-    "am_santa",
-    "bf_alice",
-    "bf_emma",
-    "bf_isabella",
-    "bf_lily",
-    "bm_daniel",
-    "bm_fable",
-    "bm_george",
-    "bm_lewis",
-    "ef_dora",
-    "em_alex",
-    "em_santa",
-    "ff_siwis",
-    "hf_alpha",
-    "hf_beta",
-    "hm_omega",
-    "hm_psi",
-    "if_sara",
-    "im_nicola",
-    "jf_alpha",
-    "jf_gongitsune",
-    "jf_nezumi",
-    "jf_tebukuro",
-    "jm_kumo",
-    "pf_dora",
-    "pm_alex",
-    "pm_santa",
-    "zf_xiaobei",
-    "zf_xiaoni",
-    "zf_xiaoxiao",
-    "zf_xiaoyi",
-    "zm_yunjian",
-    "zm_yunxi",
-    "zm_yunxia",
-    "zm_yunyang",
+    "Vivian",
+    "Serena",
+    "Uncle_Fu",
+    "Dylan",
+    "Eric",
+    "Ryan",
+    "Aiden",
 ]
 
 _generation_done = threading.Event()
@@ -337,20 +265,20 @@ def _play_streaming(audio_buffer):
                 tty_stream.close()
 
 
-def speak(text, voice="af_heart", speed=1.0, lang="a"):
+def speak(text, voice="Vivian", speed=1.0, lang="Chinese"):
     """Generate speech for `text` and stream it to the audio device.
 
     Architecture overview
     ---------------------
-    A single KPipeline runs in a background thread and yields audio chunks sentence-by-sentence.
+    A Qwen3-TTS model runs in a background thread and yields audio chunks streamingly.
     Each chunk is appended to a shared buffer, then _play_streaming starts consuming that buffer as soon
     as the first chunk is available — so the user hears audio almost immediately
     rather than waiting for the full text to be synthesised first.
     """
     import numpy as np
-    from kokoro import KPipeline
+    from mlx_audio.tts.utils import load_model
 
-    pipeline = KPipeline(lang_code=lang, repo_id="hexgrad/Kokoro-82M")
+    model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
 
     # audio_buffer[0] starts empty and grows as the generation thread appends chunks.
     # Using a list lets the generation thread replace the reference (list[0] = new_array)
@@ -360,11 +288,19 @@ def speak(text, voice="af_heart", speed=1.0, lang="a"):
 
     def generate_audio():
         """Run the TTS pipeline and append each audio chunk to the shared buffer."""
-        for _graphemes, _phonemes, audio_chunk in pipeline(
-            text, voice=voice, speed=speed
+        # Use stream=True to get audio chunks as they are generated
+        for result in model.generate_custom_voice(
+            text=text,
+            speaker=voice,
+            language=lang,
+            instruct="Clear and natural reading voice.",
+            stream=True,
+            streaming_interval=0.32
         ):
             if _quit_requested.is_set():
                 break
+            audio_chunk = np.array(result.audio)
+
             # Extend the buffer by creating a new concatenated array and swapping
             # the reference. The old array is garbage-collected by Python once no
             # other thread holds a reference to it.
@@ -419,7 +355,7 @@ def _run():
         _save_config(updates)
         return
 
-    parser = argparse.ArgumentParser(description="Text-to-speech using Kokoro")
+    parser = argparse.ArgumentParser(description="Text-to-speech using Qwen3-TTS")
     parser.add_argument(
         "input",
         nargs="?",
@@ -428,9 +364,9 @@ def _run():
     )
     parser.add_argument(
         "--voice",
-        default=_config.get("voice", "af_heart"),
+        default=_config.get("voice", "Vivian"),
         choices=VOICES,
-        help="Voice name (default: af_heart, or set in config.json)",
+        help="Voice name (default: Vivian, or set in config.json)",
     )
     parser.add_argument(
         "--speed",
@@ -439,7 +375,7 @@ def _run():
         help="Speech speed multiplier (default: 1.0, or set in config.json)",
     )
     parser.add_argument(
-        "--lang", default=_config.get("lang", "a"), help="Language code (default: a)"
+        "--lang", default=_config.get("lang", "Chinese"), help="Language code (default: Chinese)"
     )
     args = parser.parse_args()
 

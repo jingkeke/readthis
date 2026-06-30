@@ -7,7 +7,7 @@ name = "readthis"
 dynamic = ["version"]
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "kokoro==0.9.4",
+    "mlx-audio>=0.4.4",
     "soundfile==0.13.1",
     "sounddevice==0.5.5",
     "trafilatura==2.0.0",
