@@ -286,9 +286,21 @@ def speak(text, voice="Vivian", speed=1.0, lang="Chinese"):
     # always read audio_buffer[0] and get a valid complete array.
     audio_buffer = [np.zeros(0, dtype=np.float32)]
 
-    def generate_audio():
-        """Run the TTS pipeline and append each audio chunk to the shared buffer."""
-        # Use stream=True to get audio chunks as they are generated
+    def ui_worker():
+        # Wait until the first chunk is ready or generation is done/quit
+        with _console.status("Generating..."):
+            while len(audio_buffer[0]) == 0 and not _quit_requested.is_set() and not _generation_done.is_set():
+                time.sleep(0.08)
+
+        if not _quit_requested.is_set():
+            _play_streaming(audio_buffer)
+
+    # Run the UI and playback polling in a background thread
+    ui_thread = threading.Thread(target=ui_worker, daemon=True)
+    ui_thread.start()
+
+    # Run MLX model evaluation on the main thread to avoid "There is no Stream(gpu, 0) in current thread"
+    try:
         for result in model.generate_custom_voice(
             text=text,
             speaker=voice,
@@ -299,26 +311,21 @@ def speak(text, voice="Vivian", speed=1.0, lang="Chinese"):
         ):
             if _quit_requested.is_set():
                 break
-            audio_chunk = np.array(result.audio)
+            import mlx.core as mx
+            # Ensure the output is a numpy array
+            audio_chunk = np.array(result.audio) if isinstance(result.audio, mx.array) else result.audio
 
             # Extend the buffer by creating a new concatenated array and swapping
             # the reference. The old array is garbage-collected by Python once no
             # other thread holds a reference to it.
             audio_buffer[0] = np.concatenate([audio_buffer[0], audio_chunk])
+    except Exception as e:
+        _console.print(f"Error during audio generation: {e}")
+    finally:
         _generation_done.set()
 
-    generation_thread = threading.Thread(target=generate_audio, daemon=True)
-    generation_thread.start()
-
-    with _console.status("Generating..."):
-        while len(audio_buffer[0]) == 0:
-            time.sleep(0.08)
-
-    _play_streaming(audio_buffer)
-
-    # Ensure the generation thread has finished before returning, even if the
-    # user quit playback early (the daemon flag means it won't block process exit).
-    generation_thread.join()
+    # Wait for the UI/playback to finish playing the rest of the buffer
+    ui_thread.join()
 
 
 def _config_path():
